@@ -1,0 +1,13 @@
+# Nạp sẵn các dashboard JSON trong thư mục /etc/grafana/dashboards (thư mục monitoring/grafana/dashboards)
+apiVersion: 1
+
+providers:
+  - name: cinema-dashboards
+    orgId: 1
+    folder: Cinema Booking
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards

@@ -1,0 +1,94 @@
+# =====================================================================
+# Luật cảnh báo (xem tại Prometheus > Alerts)
+# =====================================================================
+groups:
+  - name: cinema-availability
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Target {{ $labels.job }} ({{ $labels.instance }}) không phản hồi"
+          description: "Prometheus không lấy được metrics từ {{ $labels.instance }} trong 1 phút."
+
+      - alert: MySQLDown
+        expr: mysql_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MySQL không hoạt động"
+          description: "mysqld-exporter không kết nối được tới MySQL."
+
+      - alert: NginxDown
+        expr: nginx_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Nginx không hoạt động"
+
+      - alert: AppDatabaseConnectionLost
+        expr: cinema_db_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Website đặt vé mất kết nối CSDL"
+
+  - name: cinema-resources
+    rules:
+      - alert: HostHighCpu
+        expr: 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU máy chủ trên 85% trong 5 phút"
+
+      - alert: HostLowMemory
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100 < 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAM trống dưới 10%"
+
+      - alert: HostDiskAlmostFull
+        expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) * 100 < 15
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ổ đĩa {{ $labels.mountpoint }} còn dưới 15% dung lượng"
+
+      - alert: ContainerHighMemory
+        expr: |
+          (container_memory_working_set_bytes{name=~"cinema-.+"}
+            / on (name) container_spec_memory_limit_bytes{name=~"cinema-.+"}) * 100 > 90
+          and on (name) container_spec_memory_limit_bytes{name=~"cinema-.+"} > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} dùng trên 90% RAM được cấp"
+
+      - alert: MySQLTooManyConnections
+        expr: mysql_global_status_threads_connected / mysql_global_variables_max_connections * 100 > 80
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MySQL dùng trên 80% số kết nối tối đa"
+
+  - name: cinema-business
+    rules:
+      - alert: TooManyPendingBookings
+        expr: cinema_bookings{status="pending"} > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Hơn 50 đơn đang giữ ghế cùng lúc (có thể bị giữ ghế ảo)"

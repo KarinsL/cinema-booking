@@ -1,6 +1,6 @@
 # =====================================================================
 # ĐỀ 11 - HỆ THỐNG ĐẶT VÉ XEM PHIM / SỰ KIỆN
-# Giai đoạn 1: Website đặt vé + MySQL + phpMyAdmin + Nginx reverse proxy (HTTPS)
+# Giai đoạn 2: + Giám sát Prometheus, Grafana, cAdvisor, node-exporter, mysqld-exporter, nginx-exporter
 # Chạy toàn bộ:   docker compose up -d --build
 # Kiểm tra:       docker compose ps
 # =====================================================================
@@ -113,10 +113,124 @@ services:
       retries: 3
     networks:
       - app-network
+      - monitoring                # để nginx-exporter đọc trang stub_status
+
+  # ==================== GIÁM SÁT: PROMETHEUS + GRAFANA ====================
+  prometheus:
+    image: prom/prometheus:v3.13.4
+    container_name: cinema-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.external-url=https://prometheus.cinema.local/
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    networks:
+      - app-network               # đọc /metrics của app
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:13.2.4
+    container_name: cinema-grafana
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_SERVER_ROOT_URL: https://grafana.cinema.local/
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_COOKIE_SECURE: "true"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_LOG_MODE: console
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/cinema-overview.json
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro   # tự thêm datasource + dashboard
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - monitoring
+
+  # cAdvisor: metrics của từng container
+  cadvisor:
+    image: ghcr.io/google/cadvisor:v0.60.6
+    container_name: cinema-cadvisor
+    restart: unless-stopped
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=15s
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project
+      - --disable_metrics=advtcp,cpu_topology,cpuset,hugetlb,memory_numa,percpu,process,referenced_memory,resctrl,sched,tcp,udp
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - monitoring
+
+  # node-exporter: metrics của máy chủ Ubuntu
+  node-exporter:
+    image: prom/node-exporter:v1.10.2
+    container_name: cinema-node-exporter
+    restart: unless-stopped
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|run|var/lib/docker/.+)($$|/)
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      - monitoring
+
+  # mysqld-exporter: metrics của MySQL (tài khoản chỉ có quyền PROCESS, REPLICATION CLIENT)
+  mysqld-exporter:
+    image: prom/mysqld-exporter:v0.18.0
+    container_name: cinema-mysqld-exporter
+    restart: unless-stopped
+    command:
+      - --mysqld.address=db:3306
+      - --mysqld.username=${EXPORTER_DB_USER}
+    environment:
+      MYSQLD_EXPORTER_PASSWORD: ${EXPORTER_DB_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network               # nối tới MySQL
+      - monitoring                # để Prometheus đọc metrics
+
+  # nginx-exporter: đọc trang stub_status nội bộ của Nginx (cổng 8081)
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:1.5.1
+    container_name: cinema-nginx-exporter
+    restart: unless-stopped
+    command:
+      - --nginx.scrape-uri=http://nginx:8081/stub_status
+    depends_on:
+      - nginx
+    networks:
+      - monitoring
 
 networks:
   app-network:
     driver: bridge
+  monitoring:
+    driver: bridge
 
 volumes:
   db_data:
+  prometheus_data:
+  grafana_data:
