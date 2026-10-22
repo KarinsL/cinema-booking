@@ -82,14 +82,37 @@ Chứng chỉ tự ký nên trình duyệt sẽ cảnh báo lần đầu, chọn
 
 ## 5. Địa chỉ và tài khoản
 
-Mật khẩu nằm trong file `.env` (xem bằng `cat .env`), không được commit lên GitHub.
+Mọi mật khẩu đều do `./scripts/gen-secrets.sh` sinh ngẫu nhiên (22 ký tự) và chỉ nằm trong file `.env` trên máy Ubuntu. File này nằm trong `.gitignore`, không được commit lên GitHub, nên mỗi máy cài đặt có bộ mật khẩu riêng. Bảng dưới ghi tên đăng nhập mặc định và biến `.env` chứa mật khẩu tương ứng.
 
-| Địa chỉ | Đăng nhập |
-|---|---|
-| https://cinema.local | Khách: tự đăng ký. Admin: `APP_ADMIN_EMAIL` / `APP_ADMIN_PASSWORD` |
-| https://pma.cinema.local | Basic Auth `TOOLS_BASIC_AUTH_USER`, sau đó MySQL `cinema_dba` / `DBA_DB_PASSWORD` |
-| https://grafana.cinema.local | `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` |
-| https://prometheus.cinema.local | Basic Auth `TOOLS_BASIC_AUTH_USER` / `TOOLS_BASIC_AUTH_PASSWORD` |
+**Tài khoản đăng nhập qua trình duyệt**
+
+| Địa chỉ | Tài khoản | Tên đăng nhập mặc định | Mật khẩu (biến trong `.env`) |
+|---|---|---|---|
+| https://cinema.local/login | Admin website (vào `/admin`) | `admin@cinema.local` (`APP_ADMIN_EMAIL`) | `APP_ADMIN_PASSWORD` |
+| https://cinema.local/register | Khách hàng | tự đăng ký | tự đặt khi đăng ký |
+| https://pma.cinema.local, https://prometheus.cinema.local | Basic Auth của Nginx (lớp bảo vệ thứ nhất) | `opsadmin` (`TOOLS_BASIC_AUTH_USER`) | `TOOLS_BASIC_AUTH_PASSWORD` |
+| https://pma.cinema.local | MySQL quản trị `cinema_db` (sau Basic Auth) | `cinema_dba` (`DBA_DB_USER`) | `DBA_DB_PASSWORD` |
+| https://grafana.cinema.local | Admin Grafana | `grafadmin` (`GRAFANA_ADMIN_USER`) | `GRAFANA_ADMIN_PASSWORD` |
+
+**Tài khoản MySQL nội bộ** (tạo bởi `db/init/03-users.sh`, dùng giữa các container)
+
+| Tài khoản | Quyền | Mật khẩu (biến trong `.env`) |
+|---|---|---|
+| `root` | toàn quyền, chỉ đăng nhập được từ trong container: `docker compose exec db mysql -uroot -p` | `MYSQL_ROOT_PASSWORD` |
+| `cinema_app` (`APP_DB_USER`) | website: SELECT, INSERT, UPDATE trên `cinema_db` | `APP_DB_PASSWORD` |
+| `cinema_dba` (`DBA_DB_USER`) | toàn quyền trên `cinema_db`, khóa 1 ngày nếu sai 5 lần | `DBA_DB_PASSWORD` |
+| `cinema_report` (`REPORT_DB_USER`) | chỉ đọc (báo cáo) | `REPORT_DB_PASSWORD` |
+| `cinema_exporter` (`EXPORTER_DB_USER`) | mysqld-exporter: PROCESS, REPLICATION CLIENT | `EXPORTER_DB_PASSWORD` |
+
+Tài khoản `khachmau@cinema.local` do bootstrap tạo kèm đơn mẫu (`APP_SEED_DEMO=true`) có mật khẩu ngẫu nhiên không lưu ở đâu, chỉ dùng làm dữ liệu demo, không đăng nhập được.
+
+Xem mật khẩu đã sinh trên máy Ubuntu:
+
+```bash
+cat .env                                            # toàn bộ biến
+grep -E '_(USER|EMAIL|PASSWORD)=' .env              # chỉ tên đăng nhập và mật khẩu
+./scripts/gen-secrets.sh                            # in lại bảng thông tin đăng nhập (không tạo lại .env đã có)
+```
 
 ## 6. Kiểm tra từng phần
 
