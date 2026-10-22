@@ -1,0 +1,13 @@
+# Bí mật: mật khẩu, khóa SSL, file Basic Auth (sinh lại bằng scripts/gen-*.sh)
+.env
+nginx/certs/*.key
+nginx/certs/*.crt
+nginx/auth/.htpasswd
+
+# File tạm
+*.log
+*.bak
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

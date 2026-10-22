@@ -1,0 +1,6 @@
+# Không đưa các file này vào build context của image
+**/.git
+**/.env
+**/*.md
+**/*.log
+**/.DS_Store

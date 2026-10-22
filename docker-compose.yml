@@ -1,0 +1,122 @@
+# =====================================================================
+# ĐỀ 11 - HỆ THỐNG ĐẶT VÉ XEM PHIM / SỰ KIỆN
+# Giai đoạn 1: Website đặt vé + MySQL + phpMyAdmin + Nginx reverse proxy (HTTPS)
+# Chạy toàn bộ:   docker compose up -d --build
+# Kiểm tra:       docker compose ps
+# =====================================================================
+name: cinema
+
+services:
+  # ==================== CƠ SỞ DỮ LIỆU ====================
+  db:
+    image: mysql:8.4
+    container_name: cinema-db
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+07:00
+      - --log-error-verbosity=3   # ghi cả cảnh báo "Access denied" vào log
+      - --local-infile=OFF
+      - --skip-name-resolve
+      - --max-connections=150
+    environment:
+      TZ: ${TZ}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_ROOT_HOST: localhost  # root chỉ đăng nhập được từ bên trong container
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      # Các biến dưới đây được script db/init/03-users.sh dùng để tạo tài khoản giới hạn quyền
+      APP_DB_USER: ${APP_DB_USER}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+      DBA_DB_USER: ${DBA_DB_USER}
+      DBA_DB_PASSWORD: ${DBA_DB_PASSWORD}
+      REPORT_DB_USER: ${REPORT_DB_USER}
+      REPORT_DB_PASSWORD: ${REPORT_DB_PASSWORD}
+      EXPORTER_DB_USER: ${EXPORTER_DB_USER}
+      EXPORTER_DB_PASSWORD: ${EXPORTER_DB_PASSWORD}
+    volumes:
+      - db_data:/var/lib/mysql                          # dữ liệu (named volume)
+      - ./db/init:/docker-entrypoint-initdb.d:ro       # script tạo bảng, dữ liệu mẫu, user
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    networks:
+      - app-network
+
+  # ==================== WEBSITE ĐẶT VÉ (PHP 8.3 + Apache) ====================
+  app:
+    build:
+      context: ./app
+    image: cinema-app:1.0
+    container_name: cinema-app
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_NAME: ${MYSQL_DATABASE}
+      DB_USER: ${APP_DB_USER}
+      DB_PASSWORD: ${APP_DB_PASSWORD}
+      APP_ADMIN_EMAIL: ${APP_ADMIN_EMAIL}
+      APP_ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD}
+      APP_SEED_DEMO: ${APP_SEED_DEMO:-true}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  # ==================== CÔNG CỤ QUẢN LÝ CSDL ====================
+  phpmyadmin:
+    image: phpmyadmin:5.2.3-apache
+    container_name: cinema-phpmyadmin
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+      PMA_HOST: db
+      PMA_PORT: "3306"
+      PMA_ABSOLUTE_URI: https://pma.cinema.local/
+      HIDE_PHP_VERSION: "true"
+      UPLOAD_LIMIT: 20M
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  # ==================== NGINX REVERSE PROXY (HTTPS) ====================
+  nginx:
+    image: nginxinc/nginx-unprivileged:1.30-alpine
+    container_name: cinema-nginx
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+    ports:
+      - "80:8080"                 # HTTP (tự chuyển sang HTTPS)
+      - "443:8443"                # HTTPS
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/snippets:/etc/nginx/snippets:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./nginx/auth:/etc/nginx/auth:ro
+    depends_on:
+      - app
+      - phpmyadmin
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/nginx-health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  db_data:

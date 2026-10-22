@@ -1,0 +1,4 @@
+# Giữ ký tự xuống dòng kiểu Linux (LF) cho mọi file văn bản: script .sh có CRLF sẽ không chạy được trong container
+* text=auto eol=lf
+*.png binary
+*.jpg binary
