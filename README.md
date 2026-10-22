@@ -7,11 +7,9 @@ Bài thực hành môn **Triển khai và Quản trị Hệ thống Phần mềm
 | Sinh viên | Nguyễn Phạm Phương Lan |
 | MSSV | DTC245200624 |
 | Lớp | CNTT-K23L |
-| Giảng viên hướng dẫn | Mã Văn Diện |
+| Giảng viên hướng dẫn | Vũ Văn Diện |
 
 Website đặt vé CineTicket (PHP 8.3 + Apache) cho phép xem lịch chiếu phim và sự kiện, chọn ghế trên sơ đồ, giữ ghế 10 phút, thanh toán qua cổng giả lập và nhận vé điện tử. Toàn bộ hệ thống chạy bằng Docker Compose.
-
-> Giai đoạn hiện tại (commit 3): thêm log tập trung Loki + Promtail.
 
 ## 1. Thành phần hệ thống
 
@@ -47,6 +45,15 @@ Website đặt vé CineTicket (PHP 8.3 + Apache) cho phép xem lịch chiếu ph
  └──────────────────────────────────────────────────────────────────┘
 ```
 
+Mạng Docker được tách theo vai trò:
+
+| Mạng | internal | Thành viên |
+|---|---|---|
+| `edge` | không | nginx, grafana (cần Internet để import dashboard) |
+| `frontend` | có | nginx, app, phpmyadmin, grafana, prometheus |
+| `backend` | có | db, app, phpmyadmin, mysqld-exporter |
+| `monitoring` | có | prometheus, grafana, loki, promtail, cadvisor, các exporter, nginx |
+
 ## 3. Yêu cầu
 
 - Ubuntu Server 22.04 hoặc 24.04 (máy ảo 2 vCPU, RAM từ 4 GB, ổ đĩa trống từ 15 GB)
@@ -75,14 +82,37 @@ Chứng chỉ tự ký nên trình duyệt sẽ cảnh báo lần đầu, chọn
 
 ## 5. Địa chỉ và tài khoản
 
-Mật khẩu nằm trong file `.env` (xem bằng `cat .env`), không được commit lên GitHub.
+Mọi mật khẩu đều do `./scripts/gen-secrets.sh` sinh ngẫu nhiên (22 ký tự) và chỉ nằm trong file `.env` trên máy Ubuntu. File này nằm trong `.gitignore`, không được commit lên GitHub, nên mỗi máy cài đặt có bộ mật khẩu riêng. Bảng dưới ghi tên đăng nhập mặc định và biến `.env` chứa mật khẩu tương ứng.
 
-| Địa chỉ | Đăng nhập |
-|---|---|
-| https://cinema.local | Khách: tự đăng ký. Admin: `APP_ADMIN_EMAIL` / `APP_ADMIN_PASSWORD` |
-| https://pma.cinema.local | Basic Auth `TOOLS_BASIC_AUTH_USER`, sau đó MySQL `cinema_dba` / `DBA_DB_PASSWORD` |
-| https://grafana.cinema.local | `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` |
-| https://prometheus.cinema.local | Basic Auth `TOOLS_BASIC_AUTH_USER` / `TOOLS_BASIC_AUTH_PASSWORD` |
+**Tài khoản đăng nhập qua trình duyệt**
+
+| Địa chỉ | Tài khoản | Tên đăng nhập mặc định | Mật khẩu (biến trong `.env`) |
+|---|---|---|---|
+| https://cinema.local/login | Admin website (vào `/admin`) | `admin@cinema.local` (`APP_ADMIN_EMAIL`) | `APP_ADMIN_PASSWORD` |
+| https://cinema.local/register | Khách hàng | tự đăng ký | tự đặt khi đăng ký |
+| https://pma.cinema.local, https://prometheus.cinema.local | Basic Auth của Nginx (lớp bảo vệ thứ nhất) | `opsadmin` (`TOOLS_BASIC_AUTH_USER`) | `TOOLS_BASIC_AUTH_PASSWORD` |
+| https://pma.cinema.local | MySQL quản trị `cinema_db` (sau Basic Auth) | `cinema_dba` (`DBA_DB_USER`) | `DBA_DB_PASSWORD` |
+| https://grafana.cinema.local | Admin Grafana | `grafadmin` (`GRAFANA_ADMIN_USER`) | `GRAFANA_ADMIN_PASSWORD` |
+
+**Tài khoản MySQL nội bộ** (tạo bởi `db/init/03-users.sh`, dùng giữa các container)
+
+| Tài khoản | Quyền | Mật khẩu (biến trong `.env`) |
+|---|---|---|
+| `root` | toàn quyền, chỉ đăng nhập được từ trong container: `docker compose exec db mysql -uroot -p` | `MYSQL_ROOT_PASSWORD` |
+| `cinema_app` (`APP_DB_USER`) | website: SELECT, INSERT, UPDATE trên `cinema_db` | `APP_DB_PASSWORD` |
+| `cinema_dba` (`DBA_DB_USER`) | toàn quyền trên `cinema_db`, khóa 1 ngày nếu sai 5 lần | `DBA_DB_PASSWORD` |
+| `cinema_report` (`REPORT_DB_USER`) | chỉ đọc (báo cáo) | `REPORT_DB_PASSWORD` |
+| `cinema_exporter` (`EXPORTER_DB_USER`) | mysqld-exporter: PROCESS, REPLICATION CLIENT | `EXPORTER_DB_PASSWORD` |
+
+Tài khoản `khachmau@cinema.local` do bootstrap tạo kèm đơn mẫu (`APP_SEED_DEMO=true`) có mật khẩu ngẫu nhiên không lưu ở đâu, chỉ dùng làm dữ liệu demo, không đăng nhập được.
+
+Xem mật khẩu đã sinh trên máy Ubuntu:
+
+```bash
+cat .env                                            # toàn bộ biến
+grep -E '_(USER|EMAIL|PASSWORD)=' .env              # chỉ tên đăng nhập và mật khẩu
+./scripts/gen-secrets.sh                            # in lại bảng thông tin đăng nhập (không tạo lại .env đã có)
+```
 
 ## 6. Kiểm tra từng phần
 
@@ -122,6 +152,14 @@ sum(count_over_time({service="app"} |= "login_failed" [5m]))             # đăn
 {service="db"} |= "Access denied"                                        # đăng nhập MySQL thất bại
 ```
 
+**Hardening**
+
+```bash
+./scripts/check-security.sh      # kiểm tra tự động, in PASS/FAIL từng biện pháp
+```
+
+Chi tiết từng biện pháp và vị trí cấu hình: `docs/hardening.md`.
+
 ## 7. Cấu trúc thư mục
 
 ```text
@@ -132,7 +170,7 @@ sum(count_over_time({service="app"} |= "login_failed" [5m]))             # đăn
 ├── monitoring/              # prometheus.yml, rules/alerts.yml, grafana provisioning + dashboards
 ├── logging/                 # loki-config.yml, promtail-config.yml
 ├── docs/                    # tài liệu LogQL, hardening
-├── scripts/                 # gen-secrets.sh, gen-cert.sh, traffic.sh
+├── scripts/                 # gen-secrets.sh, gen-cert.sh, traffic.sh, check-security.sh
 ├── docker-compose.yml
 └── .env.example             # mẫu biến môi trường (file .env thật không commit)
 ```
@@ -165,3 +203,4 @@ docker compose down -v                    # dừng và XÓA dữ liệu (CSDL kh
 | 1 | Website đặt vé + MySQL + phpMyAdmin + Nginx reverse proxy HTTPS |
 | 2 | Giám sát Prometheus + Grafana (cAdvisor, node-exporter, mysqld-exporter, nginx-exporter) |
 | 3 | Log tập trung Loki + Promtail, truy vấn LogQL |
+| 4 | Hardening: non-root, read-only, cap_drop, tách mạng internal, giới hạn tài nguyên |
