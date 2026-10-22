@@ -11,7 +11,7 @@ Bài thực hành môn **Triển khai và Quản trị Hệ thống Phần mềm
 
 Website đặt vé CineTicket (PHP 8.3 + Apache) cho phép xem lịch chiếu phim và sự kiện, chọn ghế trên sơ đồ, giữ ghế 10 phút, thanh toán qua cổng giả lập và nhận vé điện tử. Toàn bộ hệ thống chạy bằng Docker Compose.
 
-> Giai đoạn hiện tại (commit 2): thêm giám sát Prometheus + Grafana.
+> Giai đoạn hiện tại (commit 3): thêm log tập trung Loki + Promtail.
 
 ## 1. Thành phần hệ thống
 
@@ -27,6 +27,8 @@ Website đặt vé CineTicket (PHP 8.3 + Apache) cho phép xem lịch chiếu ph
 | `node-exporter` | prom/node-exporter:v1.10.2 | Metrics máy chủ Ubuntu | nội bộ |
 | `mysqld-exporter` | prom/mysqld-exporter:v0.18.0 | Metrics MySQL | nội bộ |
 | `nginx-exporter` | nginx/nginx-prometheus-exporter:1.5.1 | Metrics Nginx (stub_status) | nội bộ |
+| `loki` | grafana/loki:3.6.11 | Lưu và truy vấn log (LogQL) | qua Grafana |
+| `promtail` | grafana/promtail:3.6.11 | Thu log stdout/stderr của mọi container | nội bộ |
 
 ## 2. Kiến trúc
 
@@ -40,6 +42,8 @@ Website đặt vé CineTicket (PHP 8.3 + Apache) cho phép xem lịch chiếu ph
  │    ├── phpmyadmin:80                                             │
  │    ├── grafana:3000 ──► prometheus:9090 ──► exporter, cAdvisor   │
  │    └── prometheus:9090                                           │
+ │  promtail ──(Docker API)──► log mọi container ──► loki:3100      │
+ │  grafana ──► loki (LogQL)                                        │
  └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -105,6 +109,19 @@ curl -k -o /dev/null -w "%{http_code}\n" https://pma.cinema.local   # 401 (cần
 - Grafana đã có sẵn data source Prometheus và dashboard "Cinema Booking - Giám sát hệ thống" (container, Nginx, MySQL, máy chủ, nghiệp vụ). Có thể import thêm dashboard cộng đồng: 1860 (Node Exporter Full), 14282 (cAdvisor), 7362 (MySQL Overview), 12708 (NGINX exporter).
 - Tạo lưu lượng mẫu để có số liệu: `./scripts/traffic.sh 5`
 
+**Loki + LogQL**
+
+Grafana → Explore → chọn data source Loki, hoặc mở dashboard "Cinema Booking - Log tập trung (Loki)". Một số truy vấn (xem đầy đủ trong `docs/logql-queries.md`):
+
+```logql
+{service="nginx"}                                                        # toàn bộ log truy cập Nginx
+{service="nginx"} | json | status >= 400                                 # request lỗi 4xx/5xx
+sum by (status) (count_over_time({service="nginx"} | json | __error__="" [5m]))   # số request theo mã HTTP
+{service="app"} | json | event="payment_success"                         # các giao dịch thanh toán thành công
+sum(count_over_time({service="app"} |= "login_failed" [5m]))             # đăng nhập sai trong 5 phút
+{service="db"} |= "Access denied"                                        # đăng nhập MySQL thất bại
+```
+
 ## 7. Cấu trúc thư mục
 
 ```text
@@ -113,6 +130,8 @@ curl -k -o /dev/null -w "%{http_code}\n" https://pma.cinema.local   # 401 (cần
 ├── db/init/                 # 01-schema.sql, 02-seed.sql, 03-users.sh (chạy khi khởi tạo CSDL lần đầu)
 ├── nginx/                   # nginx.conf, conf.d/ (từng tên miền), snippets/, certs/, auth/
 ├── monitoring/              # prometheus.yml, rules/alerts.yml, grafana provisioning + dashboards
+├── logging/                 # loki-config.yml, promtail-config.yml
+├── docs/                    # tài liệu LogQL, hardening
 ├── scripts/                 # gen-secrets.sh, gen-cert.sh, traffic.sh
 ├── docker-compose.yml
 └── .env.example             # mẫu biến môi trường (file .env thật không commit)
@@ -137,6 +156,7 @@ docker compose down -v                    # dừng và XÓA dữ liệu (CSDL kh
 | `Access denied` khi app kết nối DB sau khi đổi `.env` | Mật khẩu chỉ áp dụng lúc khởi tạo CSDL lần đầu: `docker compose down -v` rồi `up -d` lại |
 | Trang báo 502 Bad Gateway | Service phía sau chưa chạy xong: `docker compose ps`, `docker compose logs <service>` |
 | Target `cadvisor` không có số liệu container | Kiểm tra `ls /run/containerd/containerd.sock`; Docker cài bằng snap không có file này, nên cài Docker theo hướng dẫn apt |
+| Promtail báo `client version ... is too old` | Docker Engine 29.0 đến 29.2: thêm `"min-api-version": "1.24"` vào `/etc/docker/daemon.json` rồi `sudo systemctl restart docker` |
 
 ## 10. Lịch sử phát triển
 
@@ -144,3 +164,4 @@ docker compose down -v                    # dừng và XÓA dữ liệu (CSDL kh
 |---|---|
 | 1 | Website đặt vé + MySQL + phpMyAdmin + Nginx reverse proxy HTTPS |
 | 2 | Giám sát Prometheus + Grafana (cAdvisor, node-exporter, mysqld-exporter, nginx-exporter) |
+| 3 | Log tập trung Loki + Promtail, truy vấn LogQL |

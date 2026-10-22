@@ -1,6 +1,6 @@
 # =====================================================================
 # ĐỀ 11 - HỆ THỐNG ĐẶT VÉ XEM PHIM / SỰ KIỆN
-# Giai đoạn 2: + Giám sát Prometheus, Grafana, cAdvisor, node-exporter, mysqld-exporter, nginx-exporter
+# Giai đoạn 3: + Log tập trung Loki + Promtail (truy vấn bằng LogQL trong Grafana)
 # Chạy toàn bộ:   docker compose up -d --build
 # Kiểm tra:       docker compose ps
 # =====================================================================
@@ -224,6 +224,32 @@ services:
     networks:
       - monitoring
 
+  # ==================== LOG TẬP TRUNG: LOKI + PROMTAIL ====================
+  loki:
+    image: grafana/loki:3.6.11
+    container_name: cinema-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./logging/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    networks:
+      - monitoring
+
+  promtail:
+    image: grafana/promtail:3.6.11
+    container_name: cinema-promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./logging/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # đọc danh sách container và log qua Docker API
+      - promtail_data:/var/lib/promtail
+    depends_on:
+      - loki
+    networks:
+      - monitoring
+
 networks:
   app-network:
     driver: bridge
@@ -234,3 +260,5 @@ volumes:
   db_data:
   prometheus_data:
   grafana_data:
+  loki_data:
+  promtail_data:

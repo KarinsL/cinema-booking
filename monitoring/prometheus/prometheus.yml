@@ -48,3 +48,11 @@ scrape_configs:
     static_configs:
       - targets: ['grafana:3000']
 
+  # Hệ thống log tập trung (thêm ở giai đoạn 3)
+  - job_name: loki
+    static_configs:
+      - targets: ['loki:3100']
+
+  - job_name: promtail
+    static_configs:
+      - targets: ['promtail:9080']
