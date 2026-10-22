@@ -7,7 +7,7 @@ Bài thực hành môn **Triển khai và Quản trị Hệ thống Phần mềm
 | Sinh viên | Nguyễn Phạm Phương Lan |
 | MSSV | DTC245200624 |
 | Lớp | CNTT-K23L |
-| Giảng viên hướng dẫn | Mã Văn Diện |
+| Giảng viên hướng dẫn | Vũ Văn Diện |
 
 Website đặt vé CineTicket (PHP 8.3 + Apache) cho phép xem lịch chiếu phim và sự kiện, chọn ghế trên sơ đồ, giữ ghế 10 phút, thanh toán qua cổng giả lập và nhận vé điện tử. Toàn bộ hệ thống chạy bằng Docker Compose.
 
