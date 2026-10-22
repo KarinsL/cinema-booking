@@ -11,7 +11,7 @@ Bài thực hành môn **Triển khai và Quản trị Hệ thống Phần mềm
 
 Website đặt vé CineTicket (PHP 8.3 + Apache) cho phép xem lịch chiếu phim và sự kiện, chọn ghế trên sơ đồ, giữ ghế 10 phút, thanh toán qua cổng giả lập và nhận vé điện tử. Toàn bộ hệ thống chạy bằng Docker Compose.
 
-> Giai đoạn hiện tại (commit 1): website + MySQL + phpMyAdmin + Nginx reverse proxy HTTPS.
+> Giai đoạn hiện tại (commit 2): thêm giám sát Prometheus + Grafana.
 
 ## 1. Thành phần hệ thống
 
@@ -21,6 +21,12 @@ Website đặt vé CineTicket (PHP 8.3 + Apache) cho phép xem lịch chiếu ph
 | `app` | build từ `app/Dockerfile` (php:8.3-apache) | Website đặt vé, endpoint `/health` và `/metrics` nội bộ | https://cinema.local |
 | `db` | mysql:8.4 | CSDL `cinema_db` | chỉ trong mạng Docker |
 | `phpmyadmin` | phpmyadmin:5.2.3-apache | Quản lý CSDL | https://pma.cinema.local |
+| `prometheus` | prom/prometheus:v3.13.4 | Thu thập metrics, luật cảnh báo | https://prometheus.cinema.local |
+| `grafana` | grafana/grafana:13.2.4 | Dashboard giám sát | https://grafana.cinema.local |
+| `cadvisor` | ghcr.io/google/cadvisor:v0.60.6 | Metrics từng container | nội bộ |
+| `node-exporter` | prom/node-exporter:v1.10.2 | Metrics máy chủ Ubuntu | nội bộ |
+| `mysqld-exporter` | prom/mysqld-exporter:v0.18.0 | Metrics MySQL | nội bộ |
+| `nginx-exporter` | nginx/nginx-prometheus-exporter:1.5.1 | Metrics Nginx (stub_status) | nội bộ |
 
 ## 2. Kiến trúc
 
@@ -32,6 +38,8 @@ Website đặt vé CineTicket (PHP 8.3 + Apache) cho phép xem lịch chiếu ph
  │  nginx (HTTPS, headers, Basic Auth, rate limit)                  │
  │    ├── app:8080 (PHP+Apache) ──► db:3306 (MySQL) ◄── phpmyadmin │
  │    ├── phpmyadmin:80                                             │
+ │    ├── grafana:3000 ──► prometheus:9090 ──► exporter, cAdvisor   │
+ │    └── prometheus:9090                                           │
  └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -69,6 +77,8 @@ Mật khẩu nằm trong file `.env` (xem bằng `cat .env`), không được co
 |---|---|
 | https://cinema.local | Khách: tự đăng ký. Admin: `APP_ADMIN_EMAIL` / `APP_ADMIN_PASSWORD` |
 | https://pma.cinema.local | Basic Auth `TOOLS_BASIC_AUTH_USER`, sau đó MySQL `cinema_dba` / `DBA_DB_PASSWORD` |
+| https://grafana.cinema.local | `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` |
+| https://prometheus.cinema.local | Basic Auth `TOOLS_BASIC_AUTH_USER` / `TOOLS_BASIC_AUTH_PASSWORD` |
 
 ## 6. Kiểm tra từng phần
 
@@ -89,6 +99,12 @@ curl -kI https://cinema.local                    # 200 + Strict-Transport-Securi
 curl -k -o /dev/null -w "%{http_code}\n" https://pma.cinema.local   # 401 (cần Basic Auth)
 ```
 
+**Prometheus + Grafana**
+
+- Prometheus → Status → Target health: các job `prometheus`, `node-exporter`, `cadvisor`, `mysql`, `nginx`, `cinema-app`, `grafana` đều UP.
+- Grafana đã có sẵn data source Prometheus và dashboard "Cinema Booking - Giám sát hệ thống" (container, Nginx, MySQL, máy chủ, nghiệp vụ). Có thể import thêm dashboard cộng đồng: 1860 (Node Exporter Full), 14282 (cAdvisor), 7362 (MySQL Overview), 12708 (NGINX exporter).
+- Tạo lưu lượng mẫu để có số liệu: `./scripts/traffic.sh 5`
+
 ## 7. Cấu trúc thư mục
 
 ```text
@@ -96,7 +112,8 @@ curl -k -o /dev/null -w "%{http_code}\n" https://pma.cinema.local   # 401 (cần
 ├── app/                     # website đặt vé (Dockerfile, cấu hình Apache/PHP, mã nguồn src/)
 ├── db/init/                 # 01-schema.sql, 02-seed.sql, 03-users.sh (chạy khi khởi tạo CSDL lần đầu)
 ├── nginx/                   # nginx.conf, conf.d/ (từng tên miền), snippets/, certs/, auth/
-├── scripts/                 # gen-secrets.sh, gen-cert.sh
+├── monitoring/              # prometheus.yml, rules/alerts.yml, grafana provisioning + dashboards
+├── scripts/                 # gen-secrets.sh, gen-cert.sh, traffic.sh
 ├── docker-compose.yml
 └── .env.example             # mẫu biến môi trường (file .env thật không commit)
 ```
@@ -119,9 +136,11 @@ docker compose down -v                    # dừng và XÓA dữ liệu (CSDL kh
 | Nginx báo `cannot load certificate key ... Permission denied` | Chạy lại `./scripts/gen-cert.sh` (đặt quyền đọc cho user nginx, gid 101) |
 | `Access denied` khi app kết nối DB sau khi đổi `.env` | Mật khẩu chỉ áp dụng lúc khởi tạo CSDL lần đầu: `docker compose down -v` rồi `up -d` lại |
 | Trang báo 502 Bad Gateway | Service phía sau chưa chạy xong: `docker compose ps`, `docker compose logs <service>` |
+| Target `cadvisor` không có số liệu container | Kiểm tra `ls /run/containerd/containerd.sock`; Docker cài bằng snap không có file này, nên cài Docker theo hướng dẫn apt |
 
 ## 10. Lịch sử phát triển
 
 | Commit | Nội dung |
 |---|---|
 | 1 | Website đặt vé + MySQL + phpMyAdmin + Nginx reverse proxy HTTPS |
+| 2 | Giám sát Prometheus + Grafana (cAdvisor, node-exporter, mysqld-exporter, nginx-exporter) |

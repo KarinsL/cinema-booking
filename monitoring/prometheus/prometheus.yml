@@ -1,0 +1,50 @@
+# =====================================================================
+# Prometheus: thu thập metrics của container, web server, database và ứng dụng
+# Tên target là tên service trong docker-compose (Docker DNS tự phân giải).
+# =====================================================================
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    project: cinema-booking
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # Chính Prometheus
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Máy chủ Ubuntu: CPU, RAM, ổ đĩa, mạng
+  - job_name: node-exporter
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # Từng container: CPU, RAM, mạng, I/O
+  - job_name: cadvisor
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # MySQL: kết nối, truy vấn/giây, InnoDB...
+  - job_name: mysql
+    static_configs:
+      - targets: ['mysqld-exporter:9104']
+
+  # Nginx: request, kết nối đang mở (từ stub_status)
+  - job_name: nginx
+    static_configs:
+      - targets: ['nginx-exporter:9113']
+
+  # Ứng dụng đặt vé: số vé bán, doanh thu, đơn theo trạng thái
+  - job_name: cinema-app
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['app:8080']
+
+  # Grafana tự xuất metrics của nó
+  - job_name: grafana
+    static_configs:
+      - targets: ['grafana:3000']
+
