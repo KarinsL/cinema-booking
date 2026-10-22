@@ -1,22 +1,35 @@
 # =====================================================================
 # ĐỀ 11 - HỆ THỐNG ĐẶT VÉ XEM PHIM / SỰ KIỆN
-# Giai đoạn 3: + Log tập trung Loki + Promtail (truy vấn bằng LogQL trong Grafana)
 # Chạy toàn bộ:   docker compose up -d --build
 # Kiểm tra:       docker compose ps
 # =====================================================================
 name: cinema
 
+# ---- Thiết lập bảo mật dùng chung (YAML anchor, giai đoạn 4: hardening) ----
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true      # tiến trình không thể leo thang quyền (setuid...)
+  cap_drop:
+    - ALL                         # bỏ toàn bộ Linux capabilities
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"             # xoay vòng log, tránh đầy ổ đĩa
+      max-file: "3"
+
 services:
   # ==================== CƠ SỞ DỮ LIỆU ====================
   db:
+    <<: *hardening
     image: mysql:8.4
     container_name: cinema-db
-    restart: unless-stopped
+    user: mysql                   # chạy thẳng bằng user mysql, không khởi động bằng root
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
       - --default-time-zone=+07:00
-      - --log-error-verbosity=3   # ghi cả cảnh báo "Access denied" vào log
+      - --log-error-verbosity=3   # ghi cả cảnh báo "Access denied" để Loki thu thập
       - --local-infile=OFF
       - --skip-name-resolve
       - --max-connections=150
@@ -25,7 +38,6 @@ services:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_ROOT_HOST: localhost  # root chỉ đăng nhập được từ bên trong container
       MYSQL_DATABASE: ${MYSQL_DATABASE}
-      # Các biến dưới đây được script db/init/03-users.sh dùng để tạo tài khoản giới hạn quyền
       APP_DB_USER: ${APP_DB_USER}
       APP_DB_PASSWORD: ${APP_DB_PASSWORD}
       DBA_DB_USER: ${DBA_DB_USER}
@@ -35,8 +47,8 @@ services:
       EXPORTER_DB_USER: ${EXPORTER_DB_USER}
       EXPORTER_DB_PASSWORD: ${EXPORTER_DB_PASSWORD}
     volumes:
-      - db_data:/var/lib/mysql                          # dữ liệu (named volume)
-      - ./db/init:/docker-entrypoint-initdb.d:ro       # script tạo bảng, dữ liệu mẫu, user
+      - db_data:/var/lib/mysql
+      - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
       interval: 10s
@@ -44,15 +56,24 @@ services:
       retries: 12
       start_period: 40s
     networks:
-      - app-network
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
 
   # ==================== WEBSITE ĐẶT VÉ (PHP 8.3 + Apache) ====================
   app:
+    <<: *hardening
     build:
       context: ./app
     image: cinema-app:1.0
     container_name: cinema-app
-    restart: unless-stopped
+    read_only: true               # root filesystem chỉ đọc
+    tmpfs:
+      - /tmp:mode=1777,size=64m   # session PHP (mode 1777 để user www-data ghi được)
+      - /run:mode=1777,size=16m   # PID/lock của Apache
     environment:
       TZ: ${TZ}
       DB_HOST: db
@@ -67,13 +88,27 @@ services:
       db:
         condition: service_healthy
     networks:
-      - app-network
+      - frontend
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 384m
+          pids: 200               # chặn fork bomb
 
   # ==================== CÔNG CỤ QUẢN LÝ CSDL ====================
   phpmyadmin:
     image: phpmyadmin:5.2.3-apache
     container_name: cinema-phpmyadmin
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       TZ: ${TZ}
       PMA_HOST: db
@@ -85,17 +120,25 @@ services:
       db:
         condition: service_healthy
     networks:
-      - app-network
+      - frontend
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 256m
 
   # ==================== NGINX REVERSE PROXY (HTTPS) ====================
   nginx:
+    <<: *hardening
     image: nginxinc/nginx-unprivileged:1.30-alpine
     container_name: cinema-nginx
-    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=32m   # pid và file tạm của Nginx
     environment:
       TZ: ${TZ}
     ports:
-      - "80:8080"                 # HTTP (tự chuyển sang HTTPS)
+      - "80:8080"                 # cổng DUY NHẤT mở ra ngoài: HTTP (tự chuyển sang HTTPS)
       - "443:8443"                # HTTPS
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
@@ -112,14 +155,21 @@ services:
       timeout: 5s
       retries: 3
     networks:
-      - app-network
-      - monitoring                # để nginx-exporter đọc trang stub_status
+      edge:
+        priority: 1000            # mạng có cổng publish, nối trước tiên
+      frontend: {}
+      monitoring: {}
+    deploy:
+      resources:
+        limits:
+          memory: 128m
 
   # ==================== GIÁM SÁT: PROMETHEUS + GRAFANA ====================
   prometheus:
+    <<: *hardening
     image: prom/prometheus:v3.13.4
     container_name: cinema-prometheus
-    restart: unless-stopped
+    read_only: true
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -130,13 +180,17 @@ services:
       - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
     networks:
-      - app-network               # đọc /metrics của app
+      - frontend
       - monitoring
+    deploy:
+      resources:
+        limits:
+          memory: 512m
 
   grafana:
+    <<: *hardening
     image: grafana/grafana:13.2.4
     container_name: cinema-grafana
-    restart: unless-stopped
     environment:
       TZ: ${TZ}
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
@@ -151,18 +205,32 @@ services:
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/cinema-overview.json
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro   # tự thêm datasource + dashboard
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
     depends_on:
       - prometheus
     networks:
-      - monitoring
+      edge:
+        priority: 1000            # cần Internet để Import dashboard theo ID (1860, 7362...)
+      frontend: {}
+      monitoring: {}
+    deploy:
+      resources:
+        limits:
+          memory: 512m
 
-  # cAdvisor: metrics của từng container
+  # cAdvisor: metrics của từng container (cần đọc thông tin Docker trên máy host)
   cadvisor:
     image: ghcr.io/google/cadvisor:v0.60.6
     container_name: cinema-cadvisor
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     command:
       - --docker_only=true
       - --housekeeping_interval=15s
@@ -177,12 +245,17 @@ services:
       - /dev/disk/:/dev/disk:ro
     networks:
       - monitoring
+    deploy:
+      resources:
+        limits:
+          memory: 256m
 
   # node-exporter: metrics của máy chủ Ubuntu
   node-exporter:
+    <<: *hardening
     image: prom/node-exporter:v1.10.2
     container_name: cinema-node-exporter
-    restart: unless-stopped
+    read_only: true
     command:
       - --path.procfs=/host/proc
       - --path.sysfs=/host/sys
@@ -194,12 +267,17 @@ services:
       - /:/rootfs:ro
     networks:
       - monitoring
+    deploy:
+      resources:
+        limits:
+          memory: 128m
 
   # mysqld-exporter: metrics của MySQL (tài khoản chỉ có quyền PROCESS, REPLICATION CLIENT)
   mysqld-exporter:
+    <<: *hardening
     image: prom/mysqld-exporter:v0.18.0
     container_name: cinema-mysqld-exporter
-    restart: unless-stopped
+    read_only: true
     command:
       - --mysqld.address=db:3306
       - --mysqld.username=${EXPORTER_DB_USER}
@@ -209,52 +287,81 @@ services:
       db:
         condition: service_healthy
     networks:
-      - app-network               # nối tới MySQL
-      - monitoring                # để Prometheus đọc metrics
+      - backend
+      - monitoring
+    deploy:
+      resources:
+        limits:
+          memory: 64m
 
   # nginx-exporter: đọc trang stub_status nội bộ của Nginx (cổng 8081)
   nginx-exporter:
+    <<: *hardening
     image: nginx/nginx-prometheus-exporter:1.5.1
     container_name: cinema-nginx-exporter
-    restart: unless-stopped
+    user: "65534:65534"           # nobody: không cần quyền gì ngoài gọi HTTP tới Nginx
+    read_only: true
     command:
       - --nginx.scrape-uri=http://nginx:8081/stub_status
     depends_on:
       - nginx
     networks:
       - monitoring
+    deploy:
+      resources:
+        limits:
+          memory: 64m
 
   # ==================== LOG TẬP TRUNG: LOKI + PROMTAIL ====================
   loki:
+    <<: *hardening
     image: grafana/loki:3.6.11
     container_name: cinema-loki
-    restart: unless-stopped
     command: -config.file=/etc/loki/loki-config.yml
     volumes:
       - ./logging/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
       - loki_data:/loki
     networks:
       - monitoring
+    deploy:
+      resources:
+        limits:
+          memory: 512m
 
   promtail:
+    <<: *hardening
     image: grafana/promtail:3.6.11
     container_name: cinema-promtail
-    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=16m
     command: -config.file=/etc/promtail/promtail-config.yml
     volumes:
       - ./logging/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro   # đọc danh sách container và log qua Docker API
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - promtail_data:/var/lib/promtail
     depends_on:
       - loki
     networks:
       - monitoring
+    deploy:
+      resources:
+        limits:
+          memory: 128m
 
+# ==================== MẠNG: tách theo vai trò (network isolation) ====================
 networks:
-  app-network:
+  edge:            # mạng thường, có cổng publish và Internet: chỉ nginx, grafana
     driver: bridge
-  monitoring:
+  frontend:        # nginx <-> app, phpMyAdmin, Grafana, Prometheus (không ra Internet)
     driver: bridge
+    internal: true
+  backend:         # app, phpMyAdmin, mysqld-exporter <-> MySQL (không ra Internet)
+    driver: bridge
+    internal: true
+  monitoring:      # Prometheus, Grafana, Loki, exporter, Promtail (không ra Internet)
+    driver: bridge
+    internal: true
 
 volumes:
   db_data:

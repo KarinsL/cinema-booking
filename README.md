@@ -11,8 +11,6 @@ Bài thực hành môn **Triển khai và Quản trị Hệ thống Phần mềm
 
 Website đặt vé CineTicket (PHP 8.3 + Apache) cho phép xem lịch chiếu phim và sự kiện, chọn ghế trên sơ đồ, giữ ghế 10 phút, thanh toán qua cổng giả lập và nhận vé điện tử. Toàn bộ hệ thống chạy bằng Docker Compose.
 
-> Giai đoạn hiện tại (commit 3): thêm log tập trung Loki + Promtail.
-
 ## 1. Thành phần hệ thống
 
 | Service | Image | Vai trò | Truy cập |
@@ -46,6 +44,15 @@ Website đặt vé CineTicket (PHP 8.3 + Apache) cho phép xem lịch chiếu ph
  │  grafana ──► loki (LogQL)                                        │
  └──────────────────────────────────────────────────────────────────┘
 ```
+
+Mạng Docker được tách theo vai trò:
+
+| Mạng | internal | Thành viên |
+|---|---|---|
+| `edge` | không | nginx, grafana (cần Internet để import dashboard) |
+| `frontend` | có | nginx, app, phpmyadmin, grafana, prometheus |
+| `backend` | có | db, app, phpmyadmin, mysqld-exporter |
+| `monitoring` | có | prometheus, grafana, loki, promtail, cadvisor, các exporter, nginx |
 
 ## 3. Yêu cầu
 
@@ -122,6 +129,14 @@ sum(count_over_time({service="app"} |= "login_failed" [5m]))             # đăn
 {service="db"} |= "Access denied"                                        # đăng nhập MySQL thất bại
 ```
 
+**Hardening**
+
+```bash
+./scripts/check-security.sh      # kiểm tra tự động, in PASS/FAIL từng biện pháp
+```
+
+Chi tiết từng biện pháp và vị trí cấu hình: `docs/hardening.md`.
+
 ## 7. Cấu trúc thư mục
 
 ```text
@@ -132,7 +147,7 @@ sum(count_over_time({service="app"} |= "login_failed" [5m]))             # đăn
 ├── monitoring/              # prometheus.yml, rules/alerts.yml, grafana provisioning + dashboards
 ├── logging/                 # loki-config.yml, promtail-config.yml
 ├── docs/                    # tài liệu LogQL, hardening
-├── scripts/                 # gen-secrets.sh, gen-cert.sh, traffic.sh
+├── scripts/                 # gen-secrets.sh, gen-cert.sh, traffic.sh, check-security.sh
 ├── docker-compose.yml
 └── .env.example             # mẫu biến môi trường (file .env thật không commit)
 ```
@@ -165,3 +180,4 @@ docker compose down -v                    # dừng và XÓA dữ liệu (CSDL kh
 | 1 | Website đặt vé + MySQL + phpMyAdmin + Nginx reverse proxy HTTPS |
 | 2 | Giám sát Prometheus + Grafana (cAdvisor, node-exporter, mysqld-exporter, nginx-exporter) |
 | 3 | Log tập trung Loki + Promtail, truy vấn LogQL |
+| 4 | Hardening: non-root, read-only, cap_drop, tách mạng internal, giới hạn tài nguyên |
